@@ -5,85 +5,85 @@ const cors = require('cors');
 
 const app = express();
 app.use(cors());
+app.use(express.json());
 
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: {
-    origin: '*', // In production, restrict this to your frontend URL
+    origin: '*',
     methods: ['GET', 'POST']
   }
 });
 
-// --- Core Logic ---
-
-// 1. Define the 5 valid codes for your convoy members.
 const VALID_CONVOY_CODES = new Set(['1111', '2222', '3333', '4444', '5555']);
 
-// 2. In-memory store for active trackers. We use socket.id as the key.
-// { socketId: { name: 'User', lat: 36.8, lng: 10.1 } }
+// Data structure: { socketId: { name: 'User', path: [...], danger: false } }
 let activeTrackers = {};
 
 io.on('connection', (socket) => {
   console.log(`🔌 New client connected: ${socket.id}`);
-
-  // This event is ONLY for the public map viewers
+  
   socket.on('subscribe-to-all-locations', () => {
-    console.log(`🗺️  A public viewer connected (${socket.id}) and is now watching.`);
-    // When a new viewer connects, send them the current locations of all active trackers.
+    console.log(`🗺️  A viewer connected (${socket.id}).`);
     socket.emit('initial-locations', Object.values(activeTrackers));
   });
 
-
-  // This event is ONLY for convoy members with a code
   socket.on('start-tracking', ({ code, name }) => {
-    // 3. Check if the code is valid
     if (!VALID_CONVOY_CODES.has(code)) {
-      // Optional: Send an error back to the user
       socket.emit('auth-error', 'Invalid code.');
       return;
     }
-
-    console.log(`✅ ${name} authenticated with code ${code}. Starting to track.`);
-    socket.userName = name; // Store name on the socket instance
-
-    // Optional: Let the user know they are connected successfully
-    socket.emit('tracking-started');
+    console.log(`✅ ${name} (${socket.id}) authenticated.`);
+    
+    activeTrackers[socket.id] = {
+        name: name,
+        path: [],
+        danger: false // Start with no danger
+    };
+    
+    socket.emit('tracking-started', { socketId: socket.id });
+    io.emit('locations-updated', Object.values(activeTrackers));
   });
 
-  // This event receives location updates from authenticated convoy members
-  socket.on('location-update', ({ lat, lng }) => {
-    // Only process updates from users who have been authenticated (have a name)
-    if (socket.userName) {
-      // Add or update the tracker's data
-      activeTrackers[socket.id] = {
-        name: socket.userName,
-        lat,
-        lng
-      };
-      
-      // 4. Broadcast the FULL, updated list of trackers to EVERYONE connected.
-      // This is simpler and ensures all viewers have the most current data for all users.
-      console.log(`📍 Location update from ${socket.userName}: ${lat}, ${lng}`);
-      io.emit('locations-updated', Object.values(activeTrackers));
+  socket.on('location-update', (data, callback) => {
+    const tracker = activeTrackers[socket.id];
+    if (!tracker) return;
+
+    const locations = Array.isArray(data) ? data : [data];
+    locations.forEach(location => {
+        if(location.lat && location.lng) {
+            tracker.path.push({ lat: location.lat, lng: location.lng });
+        }
+    });
+
+    io.emit('locations-updated', Object.values(activeTrackers));
+
+    if (typeof callback === 'function') {
+        callback({ status: 'ok' });
     }
   });
 
+  socket.on('danger-signal', () => {
+    if (activeTrackers[socket.id]) {
+        const name = activeTrackers[socket.id].name;
+        console.log(`🚨 DANGER SIGNAL RECEIVED from ${name} (${socket.id})!`);
+        activeTrackers[socket.id].danger = true;
+        io.emit('locations-updated', Object.values(activeTrackers));
+    }
+  });
 
-  // When a client disconnects, remove them from the trackers list
   socket.on('disconnect', () => {
     if (activeTrackers[socket.id]) {
       console.log(`❌ Tracker ${activeTrackers[socket.id].name} disconnected.`);
       delete activeTrackers[socket.id];
-      
-      // Broadcast the new, smaller list of trackers to all viewers
       io.emit('locations-updated', Object.values(activeTrackers));
     } else {
-        console.log(`🔌 Client ${socket.id} disconnected.`);
+      console.log(`🔌 Client ${socket.id} disconnected.`);
     }
   });
 });
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => {
+server.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 Server listening on port ${PORT}`);
 });
