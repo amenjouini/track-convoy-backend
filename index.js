@@ -38,7 +38,7 @@ io.on('connection', (socket) => {
     activeTrackers[socket.id] = {
         name: name,
         path: [],
-        danger: false // Start with no danger
+        danger: false
     };
     
     socket.emit('tracking-started', { socketId: socket.id });
@@ -71,6 +71,19 @@ io.on('connection', (socket) => {
         io.emit('locations-updated', Object.values(activeTrackers));
     }
   });
+
+  // --- NEW: Listen for the cancel danger signal ---
+  socket.on('cancel-danger-signal', () => {
+    if (activeTrackers[socket.id]) {
+      const name = activeTrackers[socket.id].name;
+      console.log(`✅ Danger signal cancelled by ${name} (${socket.id}).`);
+      // Set the danger flag back to false
+      activeTrackers[socket.id].danger = false;
+      // Broadcast the change to all viewers
+      io.emit('locations-updated', Object.values(activeTrackers));
+    }
+  });
+
 
   socket.on('disconnect', () => {
     if (activeTrackers[socket.id]) {
